@@ -11,6 +11,8 @@
 #   --public-host H   IP/host used in URLs of apps deployed without a domain (default: auto-detect).
 #   --tunnel          Behind Cloudflare Tunnel: Caddy serves plain HTTP on :80 (Cloudflare does TLS).
 #                     Point tunnel hostnames (agent domain + *.yourdomain) to http://localhost:80.
+#   --http-port N     With --tunnel: Caddy listens on 127.0.0.1:N instead of :80
+#                     (use when nginx/openresty/a panel already owns port 80).
 #
 # Env: DEPLOYMCP_REPO (default ZenithHawking/deploymcp), DEPLOYMCP_BINARY (local binary path, skips download).
 set -eu
@@ -21,6 +23,7 @@ DOMAIN=""
 EMAIL=""
 NO_CADDY=0
 TUNNEL=0
+HTTP_PORT=""
 PUBLIC_HOST=""
 BIN=/usr/local/bin/deploymcp-agent
 DATA_DIR=/var/lib/deploymcp
@@ -37,8 +40,9 @@ while [ $# -gt 0 ]; do
     --version) VERSION="${2:-}"; shift 2 ;;
     --no-caddy) NO_CADDY=1; shift ;;
     --tunnel) TUNNEL=1; shift ;;
+    --http-port) HTTP_PORT="${2:-}"; shift 2 ;;
     --public-host) PUBLIC_HOST="${2:-}"; shift 2 ;;
-    -h|--help) echo "usage: install.sh [--domain D] [--email E] [--version TAG] [--no-caddy] [--public-host H] [--tunnel]"; exit 0 ;;
+    -h|--help) echo "usage: install.sh [--domain D] [--email E] [--version TAG] [--no-caddy] [--public-host H] [--tunnel] [--http-port N]"; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
 done
@@ -46,6 +50,12 @@ done
 if [ "$TUNNEL" -eq 1 ]; then
   [ -n "$DOMAIN" ] || die "--tunnel requires --domain (the agent hostname routed through your tunnel)"
   [ "$NO_CADDY" -eq 0 ] || die "--tunnel needs Caddy; drop --no-caddy"
+fi
+CADDY_LISTEN=":80"
+if [ -n "$HTTP_PORT" ]; then
+  [ "$TUNNEL" -eq 1 ] || die "--http-port only works with --tunnel"
+  case "$HTTP_PORT" in *[!0-9]*|"") die "--http-port must be a number" ;; esac
+  CADDY_LISTEN="127.0.0.1:$HTTP_PORT"
 fi
 
 [ "$(id -u)" -eq 0 ] || die "run as root (e.g. curl ... | sudo sh -s -- --domain ...)"
@@ -143,6 +153,7 @@ DEPLOYMCP_CADDY_ADMIN=$CADDY_ADMIN
 DEPLOYMCP_ACME_EMAIL=$EMAIL
 DEPLOYMCP_PUBLIC_HOST=$PUBLIC_HOST
 DEPLOYMCP_TUNNEL=$TUNNEL
+DEPLOYMCP_CADDY_LISTEN=$CADDY_LISTEN
 EOF
 chmod 600 "$CONF_DIR/agent.env"
 
@@ -185,7 +196,7 @@ if [ -n "$DOMAIN" ] && [ "$NO_CADDY" -eq 0 ]; then
     i=$((i+1))
     if [ $i -gt 30 ]; then
       if [ "$TUNNEL" -eq 1 ]; then
-        warn "$API_URL is not reachable yet. Add a tunnel public hostname $DOMAIN -> http://localhost:80"
+        warn "$API_URL is not reachable yet. Add a tunnel public hostname $DOMAIN -> http://localhost:${CADDY_LISTEN##*:}"
       else
         warn "$API_URL is not reachable yet. Check that DNS for $DOMAIN points to $PUBLIC_HOST and ports 80/443 are open."
       fi

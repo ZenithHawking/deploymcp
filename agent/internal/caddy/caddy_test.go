@@ -20,6 +20,11 @@ func TestBuildConfigModes(t *testing.T) {
 	if strings.Contains(s, `":443"`) || strings.Contains(s, `"acme"`) || !strings.Contains(s, `"automatic_https":{"disable":true}`) {
 		t.Fatalf("tunnel config wrong: %s", s)
 	}
+	c.HTTPListen = "127.0.0.1:8088"
+	b, _ = json.Marshal(c.BuildConfig(routes))
+	if !strings.Contains(string(b), `"listen":["127.0.0.1:8088"]`) {
+		t.Fatalf("custom listen missing: %s", b)
+	}
 	if !strings.Contains(s, `"listen":"localhost:2019"`) {
 		t.Fatalf("admin listen wrong: %s", s)
 	}

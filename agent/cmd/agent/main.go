@@ -44,14 +44,15 @@ func usage() {
 Usage:
   deploymcp-agent init    [--data-dir DIR] [--force]
   deploymcp-agent serve   [--data-dir DIR] [--listen ADDR] [--domain DOMAIN]
-                          [--caddy-admin URL|off] [--acme-email EMAIL] [--public-host HOST] [--tunnel]
+                          [--caddy-admin URL|off] [--acme-email EMAIL] [--public-host HOST] [--tunnel] [--caddy-listen ADDR]
   deploymcp-agent token create --apps 'web,api'|'*' --perm read|write [--name NAME]
   deploymcp-agent token list
   deploymcp-agent token revoke ID
   deploymcp-agent version
 
 Environment: DEPLOYMCP_DATA_DIR, DEPLOYMCP_LISTEN, DEPLOYMCP_DOMAIN,
-             DEPLOYMCP_CADDY_ADMIN, DEPLOYMCP_ACME_EMAIL, DEPLOYMCP_PUBLIC_HOST, DEPLOYMCP_TUNNEL
+             DEPLOYMCP_CADDY_ADMIN, DEPLOYMCP_ACME_EMAIL, DEPLOYMCP_PUBLIC_HOST, DEPLOYMCP_TUNNEL,
+             DEPLOYMCP_CADDY_LISTEN
 `, Version)
 }
 
@@ -215,6 +216,7 @@ func cmdServe(args []string) error {
 	publicHost := fs.String("public-host", env("DEPLOYMCP_PUBLIC_HOST", ""), "public IP/host used in URLs of apps without a domain")
 	tunnel := fs.Bool("tunnel", env("DEPLOYMCP_TUNNEL", "") == "1" || env("DEPLOYMCP_TUNNEL", "") == "true",
 		"Cloudflare Tunnel mode: Caddy serves plain HTTP on :80, Cloudflare terminates TLS")
+	caddyListen := fs.String("caddy-listen", env("DEPLOYMCP_CADDY_LISTEN", ":80"), "Caddy HTTP listen address in tunnel mode, e.g. 127.0.0.1:8088")
 	fs.Parse(args)
 
 	st, err := openStore(*dataDir)
@@ -225,6 +227,7 @@ func cmdServe(args []string) error {
 
 	cd := caddy.New(*caddyAdmin, *acmeEmail)
 	cd.HTTPOnly = *tunnel
+	cd.HTTPListen = *caddyListen
 	dep := deployer.New(deployer.Config{
 		DataDir:       *dataDir,
 		PublicHost:    *publicHost,
@@ -239,7 +242,7 @@ func cmdServe(args []string) error {
 		}
 		cancel()
 		if *tunnel {
-			log.Printf("tunnel mode: Caddy serves HTTP on :80; point your Cloudflare Tunnel hostnames to http://localhost:80")
+			log.Printf("tunnel mode: Caddy serves HTTP on %s; point your Cloudflare Tunnel hostnames there", *caddyListen)
 		}
 	} else {
 		log.Printf("Caddy integration disabled; apps are exposed on host ports without HTTPS")

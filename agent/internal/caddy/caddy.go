@@ -29,7 +29,10 @@ type Client struct {
 	// HTTPOnly serves plain HTTP on :80 with automatic HTTPS disabled. Used
 	// behind Cloudflare Tunnel, where Cloudflare terminates TLS.
 	HTTPOnly bool
-	HTTP     *http.Client
+	// HTTPListen is the listen address in HTTPOnly mode (default ":80"),
+	// e.g. "127.0.0.1:8088" when port 80 is taken by another web server.
+	HTTPListen string
+	HTTP       *http.Client
 }
 
 // New returns a client. adminURL "" or "off" disables it.
@@ -70,7 +73,11 @@ func (c *Client) BuildConfig(routes []Route) map[string]any {
 		"routes": rs,
 	}
 	if c.HTTPOnly {
-		server["listen"] = []string{":80"}
+		listen := c.HTTPListen
+		if listen == "" {
+			listen = ":80"
+		}
+		server["listen"] = []string{listen}
 		server["automatic_https"] = map[string]any{"disable": true}
 	}
 	cfg := map[string]any{
