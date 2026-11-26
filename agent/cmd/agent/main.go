@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/ZenithHawking/deploymcp/agent/internal/api"
 	"github.com/ZenithHawking/deploymcp/agent/internal/auth"
 	"github.com/ZenithHawking/deploymcp/agent/internal/caddy"
+	"github.com/ZenithHawking/deploymcp/agent/internal/cloudflare"
 	"github.com/ZenithHawking/deploymcp/agent/internal/deployer"
 	"github.com/ZenithHawking/deploymcp/agent/internal/store"
 )
@@ -45,6 +47,7 @@ Usage:
   deploymcp-agent init    [--data-dir DIR] [--force]
   deploymcp-agent serve   [--data-dir DIR] [--listen ADDR] [--domain DOMAIN]
                           [--caddy-admin URL|off] [--acme-email EMAIL] [--public-host HOST] [--tunnel] [--caddy-listen ADDR]
+                          [--cloudflare-token TOKEN] [--tunnel-name NAME]
   deploymcp-agent token create --apps 'web,api'|'*' --perm read|write [--name NAME]
   deploymcp-agent token list
   deploymcp-agent token revoke ID
@@ -52,7 +55,7 @@ Usage:
 
 Environment: DEPLOYMCP_DATA_DIR, DEPLOYMCP_LISTEN, DEPLOYMCP_DOMAIN,
              DEPLOYMCP_CADDY_ADMIN, DEPLOYMCP_ACME_EMAIL, DEPLOYMCP_PUBLIC_HOST, DEPLOYMCP_TUNNEL,
-             DEPLOYMCP_CADDY_LISTEN
+             DEPLOYMCP_CADDY_LISTEN, DEPLOYMCP_CF_TOKEN, DEPLOYMCP_TUNNEL_NAME
 `, Version)
 }
 
@@ -217,7 +220,18 @@ func cmdServe(args []string) error {
 	tunnel := fs.Bool("tunnel", env("DEPLOYMCP_TUNNEL", "") == "1" || env("DEPLOYMCP_TUNNEL", "") == "true",
 		"Cloudflare Tunnel mode: Caddy serves plain HTTP on :80, Cloudflare terminates TLS")
 	caddyListen := fs.String("caddy-listen", env("DEPLOYMCP_CADDY_LISTEN", ":80"), "Caddy HTTP listen address in tunnel mode, e.g. 127.0.0.1:8088")
+	cfToken := fs.String("cloudflare-token", env("DEPLOYMCP_CF_TOKEN", ""), "Cloudflare API token: create DNS (and tunnel routes) automatically")
+	tunnelName := fs.String("tunnel-name", env("DEPLOYMCP_TUNNEL_NAME", ""), "name of the DeployMCP-managed Cloudflare Tunnel (default deploymcp-<hostname>)")
 	fs.Parse(args)
+
+	if *tunnelName == "" {
+		h, _ := os.Hostname()
+		*tunnelName = "deploymcp-" + strings.ToLower(strings.ReplaceAll(h, ".", "-"))
+	}
+	caddyService := *caddyListen
+	if strings.HasPrefix(caddyService, ":") {
+		caddyService = "127.0.0.1" + caddyService
+	}
 
 	st, err := openStore(*dataDir)
 	if err != nil {
@@ -233,6 +247,12 @@ func cmdServe(args []string) error {
 		PublicHost:    *publicHost,
 		AgentDomain:   *domain,
 		AgentUpstream: *listen,
+		CF: deployer.CloudflareConfig{
+			Client:     cloudflare.New(*cfToken),
+			Tunnel:     *tunnel,
+			TunnelName: *tunnelName,
+			Service:    "http://" + caddyService,
+		},
 	}, st, cd, deployer.CLIRunner{})
 
 	if cd.Enabled() {
@@ -246,6 +266,18 @@ func cmdServe(args []string) error {
 		}
 	} else {
 		log.Printf("Caddy integration disabled; apps are exposed on host ports without HTTPS")
+	}
+
+	if *cfToken != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		if err := dep.SetupCloudflare(ctx); err != nil {
+			log.Printf("warning: Cloudflare setup failed: %v", err)
+		} else if *tunnel {
+			log.Printf("cloudflare: tunnel %q connected; DNS and routes are managed automatically", *tunnelName)
+		} else {
+			log.Printf("cloudflare: DNS records are managed automatically")
+		}
+		cancel()
 	}
 
 	srv := &http.Server{

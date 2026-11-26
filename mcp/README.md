@@ -30,30 +30,40 @@ deploymcp (npx) ──── .tar.gz over HTTPS ────▶ deploymcp-agent 
 
 ## Install (60 seconds)
 
-**1. On the VPS** (Ubuntu/Debian, root). Point a DNS record for the agent (e.g. `deploy.example.com`) at the server first, and open ports 80/443.
+**1. On the server** (Ubuntu/Debian), pick the line that matches your setup:
 
 ```bash
-curl -fsSL https://github.com/ZenithHawking/deploymcp/releases/latest/download/install.sh \
-  | sh -s -- --domain deploy.example.com --email you@example.com
+URL=https://github.com/ZenithHawking/deploymcp/releases/latest/download/install.sh
+
+# A) Domain on Cloudflare, server behind Cloudflare Tunnel (homelab, no open ports, works next to nginx/panels)
+curl -fsSL $URL | sudo sh -s -- --tunnel --domain deploy.example.com --cloudflare-token <CF_API_TOKEN>
+
+# B) Public-IP server, domain on Cloudflare (DNS is created for you)
+curl -fsSL $URL | sudo sh -s -- --domain deploy.example.com --cloudflare-token <CF_API_TOKEN>
+
+# C) Public-IP server, any DNS provider (point deploy.example.com and each app domain to the server yourself)
+curl -fsSL $URL | sudo sh -s -- --domain deploy.example.com --email you@example.com
 ```
 
-It installs Docker (if missing), Caddy and the agent as a systemd service, then prints:
+With a Cloudflare token you never open the Cloudflare dashboard again: every domain you deploy to gets its DNS record (and tunnel route) automatically. DeployMCP only touches records it created itself, so existing records such as `example.com` or `api.example.com` are never modified.
+
+Create the token at *Cloudflare → My Profile → API Tokens → Create Token → Custom token* with:
+`Zone · Zone · Read`, `Zone · DNS · Edit`, and for mode A also `Account · Cloudflare Tunnel · Edit`.
+
+The installer sets up Docker, Caddy and the agent (systemd), then prints:
 
 ```
 ✅ DeployMCP Agent is running!
 👉 Run this command on your local machine to connect Claude Code:
 
-claude mcp add deploymcp --scope user \
-  -e DEPLOYMCP_URL=https://deploy.example.com \
-  -e DEPLOYMCP_TOKEN=dmcp_live_9f8a7b6c... \
-  -- npx -y deploymcp
+claude mcp add deploymcp --scope user   -e DEPLOYMCP_URL=https://deploy.example.com   -e DEPLOYMCP_TOKEN=dmcp_live_9f8a7b6c...   -- npx -y deploymcp
 ```
 
 plus the equivalent `mcp.json` block for Cursor / Windsurf.
 
 **2. In your editor**, just ask:
 
-> Deploy the current project as `my-api` on `api.example.com`. If it fails, read the logs and fix it.
+> Deploy the current project as `my-api` on `api2.example.com`. If it fails, read the logs and fix it.
 
 ## MCP tools
 
@@ -109,22 +119,11 @@ All endpoints except `/health` need `Authorization: Bearer <token>`.
 | GET | `/v1/apps/{name}/env` | Keys only |
 | PUT | `/v1/apps/{name}/env` | `{"set": {"K": "V"}, "delete": ["OLD"]}` |
 
-## Behind Cloudflare Tunnel (homelab / dynamic IP)
+## How Cloudflare mode works
 
-No open ports needed. Cloudflare terminates TLS; Caddy serves plain HTTP on `:80` and routes by hostname.
-
-```bash
-curl -fsSL .../install.sh | sh -s -- --tunnel --domain deploy.example.com
-```
-
-In your tunnel (Zero Trust → Networks → Tunnels → Public hostnames), route to `http://localhost:80`:
-
-| Hostname | Service |
-| --- | --- |
-| `deploy.example.com` | `http://localhost:80` |
-| `*.example.com` | `http://localhost:80` |
-
-For the wildcard, also add a DNS record `CNAME * → <tunnel-id>.cfargotunnel.com` (proxied). Then deploy apps with `domain: app.example.com`; no tunnel change is needed per app or per deploy.
+- **Tunnel mode (`--tunnel`)**: the agent creates its own remotely-managed tunnel (`deploymcp-<hostname>`) and runs the connector as a Docker container (`deploymcp-cloudflared`). Your existing tunnels are untouched. Each deployed domain is added to the tunnel's routes through the API (applied live, no restart) and gets a proxied `CNAME` to the tunnel. Caddy listens only on `127.0.0.1:8088`, so ports 80/443 stay free for whatever already runs on the server.
+- **Public-IP mode**: each domain gets a DNS-only `A`/`AAAA` record pointing to `--public-host` (auto-detected), and Caddy issues the HTTPS certificate.
+- A domain that already has a DNS record DeployMCP did not create is rejected before building: pick another subdomain.
 
 ## Agent configuration
 
@@ -139,6 +138,9 @@ For the wildcard, also add a DNS record `CNAME * → <tunnel-id>.cfargotunnel.co
 | `--acme-email` | `DEPLOYMCP_ACME_EMAIL` | (none) |
 | `--public-host` | `DEPLOYMCP_PUBLIC_HOST` | used in URLs of apps without a domain |
 | `--tunnel` | `DEPLOYMCP_TUNNEL=1` | Caddy serves HTTP only (Cloudflare Tunnel does TLS) |
+| `--caddy-listen` | `DEPLOYMCP_CADDY_LISTEN` | Caddy HTTP address in tunnel mode (installer: `127.0.0.1:8088`) |
+| `--cloudflare-token` | `DEPLOYMCP_CF_TOKEN` | automatic DNS / tunnel routes |
+| `--tunnel-name` | `DEPLOYMCP_TUNNEL_NAME` | `deploymcp-<hostname>` |
 
 The agent owns Caddy's configuration: it rebuilds the full route table and loads it through the Admin API on every change and at startup. The installer runs Caddy with `--resume` so routes survive restarts.
 

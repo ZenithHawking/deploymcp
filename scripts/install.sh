@@ -1,7 +1,14 @@
 #!/bin/sh
 # DeployMCP agent installer (Ubuntu / Debian).
 #
-#   curl -fsSL https://get.deploymcp.dev | sh -s -- --domain deploy.example.com --email you@example.com
+#   Server with public IP:
+#     curl -fsSL .../install.sh | sudo sh -s -- --domain deploy.example.com [--cloudflare-token T]
+#   Server behind Cloudflare Tunnel (homelab, no open ports):
+#     curl -fsSL .../install.sh | sudo sh -s -- --tunnel --domain deploy.example.com --cloudflare-token T
+#
+# With --cloudflare-token, DNS records (and tunnel routes) for the agent and every
+# deployed app domain are created automatically. Token permissions:
+#   Zone/Zone/Read, Zone/DNS/Edit (+ Account/Cloudflare Tunnel/Edit for --tunnel)
 #
 # Options:
 #   --domain DOMAIN   Public domain for the agent API (DNS A/AAAA record -> this VPS). Enables HTTPS.
@@ -9,10 +16,10 @@
 #   --version TAG     Agent release tag (default: latest).
 #   --no-caddy        Do not install/manage Caddy (no automatic HTTPS; apps exposed on host ports).
 #   --public-host H   IP/host used in URLs of apps deployed without a domain (default: auto-detect).
-#   --tunnel          Behind Cloudflare Tunnel: Caddy serves plain HTTP on :80 (Cloudflare does TLS).
-#                     Point tunnel hostnames (agent domain + *.yourdomain) to http://localhost:80.
-#   --http-port N     With --tunnel: Caddy listens on 127.0.0.1:N instead of :80
-#                     (use when nginx/openresty/a panel already owns port 80).
+#   --cloudflare-token T  Cloudflare API token: manage DNS (and tunnel) automatically.
+#   --tunnel          Serve through Cloudflare Tunnel (Cloudflare does TLS; no open ports needed).
+#                     Caddy listens on 127.0.0.1:8088 only, so it never conflicts with port 80.
+#   --http-port N     With --tunnel: use 127.0.0.1:N instead of 8088.
 #
 # Env: DEPLOYMCP_REPO (default ZenithHawking/deploymcp), DEPLOYMCP_BINARY (local binary path, skips download).
 set -eu
@@ -24,6 +31,7 @@ EMAIL=""
 NO_CADDY=0
 TUNNEL=0
 HTTP_PORT=""
+CF_TOKEN=""
 PUBLIC_HOST=""
 BIN=/usr/local/bin/deploymcp-agent
 DATA_DIR=/var/lib/deploymcp
@@ -41,8 +49,9 @@ while [ $# -gt 0 ]; do
     --no-caddy) NO_CADDY=1; shift ;;
     --tunnel) TUNNEL=1; shift ;;
     --http-port) HTTP_PORT="${2:-}"; shift 2 ;;
+    --cloudflare-token) CF_TOKEN="${2:-}"; shift 2 ;;
     --public-host) PUBLIC_HOST="${2:-}"; shift 2 ;;
-    -h|--help) echo "usage: install.sh [--domain D] [--email E] [--version TAG] [--no-caddy] [--public-host H] [--tunnel] [--http-port N]"; exit 0 ;;
+    -h|--help) echo "usage: install.sh [--domain D] [--email E] [--version TAG] [--no-caddy] [--public-host H] [--tunnel] [--http-port N] [--cloudflare-token T]"; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
 done
@@ -52,10 +61,11 @@ if [ "$TUNNEL" -eq 1 ]; then
   [ "$NO_CADDY" -eq 0 ] || die "--tunnel needs Caddy; drop --no-caddy"
 fi
 CADDY_LISTEN=":80"
-if [ -n "$HTTP_PORT" ]; then
-  [ "$TUNNEL" -eq 1 ] || die "--http-port only works with --tunnel"
-  case "$HTTP_PORT" in *[!0-9]*|"") die "--http-port must be a number" ;; esac
-  CADDY_LISTEN="127.0.0.1:$HTTP_PORT"
+if [ "$TUNNEL" -eq 1 ]; then
+  CADDY_LISTEN="127.0.0.1:${HTTP_PORT:-8088}"
+  case "${HTTP_PORT:-8088}" in *[!0-9]*) die "--http-port must be a number" ;; esac
+elif [ -n "$HTTP_PORT" ]; then
+  die "--http-port only works with --tunnel"
 fi
 
 [ "$(id -u)" -eq 0 ] || die "run as root (e.g. curl ... | sudo sh -s -- --domain ...)"
@@ -72,6 +82,16 @@ case "$(uname -m)" in
   aarch64|arm64) ARCH=arm64 ;;
   *) die "unsupported CPU architecture: $(uname -m)" ;;
 esac
+
+# Public-IP mode needs ports 80/443 for Caddy (HTTPS certificates).
+if [ "$TUNNEL" -eq 0 ] && [ "$NO_CADDY" -eq 0 ] && command -v ss >/dev/null 2>&1; then
+  BUSY="$(ss -ltnpH 2>/dev/null | awk '$4 ~ /:(80|443)$/ && $0 !~ /caddy/ {print $4" "$6}' | head -3)"
+  if [ -n "$BUSY" ]; then
+    die "ports 80/443 are already used by another web server:
+$BUSY
+Use --tunnel --cloudflare-token T (no ports needed), or free ports 80/443."
+  fi
+fi
 
 export DEBIAN_FRONTEND=noninteractive
 say "Installing base packages"
@@ -166,6 +186,7 @@ DEPLOYMCP_ACME_EMAIL=$EMAIL
 DEPLOYMCP_PUBLIC_HOST=$PUBLIC_HOST
 DEPLOYMCP_TUNNEL=$TUNNEL
 DEPLOYMCP_CADDY_LISTEN=$CADDY_LISTEN
+DEPLOYMCP_CF_TOKEN=$CF_TOKEN
 EOF
 chmod 600 "$CONF_DIR/agent.env"
 
@@ -207,10 +228,12 @@ if [ -n "$DOMAIN" ] && [ "$NO_CADDY" -eq 0 ]; then
   until curl -fsS --max-time 5 "$API_URL/health" >/dev/null 2>&1; do
     i=$((i+1))
     if [ $i -gt 30 ]; then
-      if [ "$TUNNEL" -eq 1 ]; then
-        warn "$API_URL is not reachable yet. Add a tunnel public hostname $DOMAIN -> http://localhost:${CADDY_LISTEN##*:}"
+      if [ -n "$CF_TOKEN" ]; then
+        warn "$API_URL is not reachable yet (DNS can take a minute). Check: journalctl -u deploymcp-agent -n 30"
+      elif [ "$TUNNEL" -eq 1 ]; then
+        warn "$API_URL is not reachable yet. Add a tunnel public hostname $DOMAIN -> http://$CADDY_LISTEN, or reinstall with --cloudflare-token"
       else
-        warn "$API_URL is not reachable yet. Check that DNS for $DOMAIN points to $PUBLIC_HOST and ports 80/443 are open."
+        warn "$API_URL is not reachable yet. Point DNS for $DOMAIN to $PUBLIC_HOST and open ports 80/443, or reinstall with --cloudflare-token"
       fi
       break
     fi

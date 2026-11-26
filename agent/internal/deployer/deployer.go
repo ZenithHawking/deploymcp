@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/ZenithHawking/deploymcp/agent/internal/caddy"
+	"github.com/ZenithHawking/deploymcp/agent/internal/cloudflare"
 	"github.com/ZenithHawking/deploymcp/agent/internal/logs"
 	"github.com/ZenithHawking/deploymcp/agent/internal/store"
 )
@@ -51,6 +52,7 @@ type Config struct {
 	KeepReleases   int
 	AgentDomain    string // domain routed to the agent itself (optional)
 	AgentUpstream  string // e.g. 127.0.0.1:7070
+	CF             CloudflareConfig
 }
 
 // Deployer orchestrates deploys.
@@ -62,6 +64,8 @@ type Deployer struct {
 	http    *http.Client
 	locks   sync.Map
 	caddyMu sync.Mutex
+	cfMu    sync.Mutex
+	tunnel  *cloudflare.Tunnel
 }
 
 // New creates a Deployer.
@@ -198,6 +202,11 @@ func (d *Deployer) Deploy(ctx context.Context, app string, bundle io.Reader, opt
 		}
 		if owner != "" && owner != app {
 			return nil, userErr(409, "domain %q is already used by app %q", domain, owner)
+		}
+		if domain != a.Domain {
+			if err := d.CheckDomain(ctx, domain); err != nil {
+				return nil, userErr(409, "cannot use domain %q: %v", domain, err)
+			}
 		}
 	}
 	hc := strings.TrimSpace(opts.HealthcheckPath)
@@ -553,6 +562,9 @@ func (d *Deployer) promote(ctx context.Context, a *store.App, r *store.Release, 
 	if err := d.SyncCaddy(ctx); err != nil {
 		caddyOK = false
 		res.Warnings = append(res.Warnings, "routing update failed, previous instance kept running: "+err.Error())
+	}
+	if err := d.SyncCloudflare(ctx); err != nil {
+		res.Warnings = append(res.Warnings, "cloudflare DNS/tunnel update failed: "+err.Error())
 	}
 	if caddyOK && prevInstance != "" && prevInstance != instance {
 		bg := context.Background()
