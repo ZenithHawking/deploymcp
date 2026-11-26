@@ -270,3 +270,13 @@ func TestEnvNeverReturnsValuesAndRollback(t *testing.T) {
 		t.Fatalf("rollback to live release should 409, got %d", code)
 	}
 }
+
+func TestRejectedDeployLeavesNoApp(t *testing.T) {
+	e := setup(t)
+	if code, _ := e.deploy(t, "web", e.admin, map[string]string{"domain": "not a domain"}); code != 400 {
+		t.Fatalf("expected 400, got %d", code)
+	}
+	if _, err := e.st.GetApp("web"); err == nil {
+		t.Fatal("rejected deploy created an app row")
+	}
+}

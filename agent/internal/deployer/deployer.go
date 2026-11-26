@@ -180,7 +180,11 @@ func (d *Deployer) Deploy(ctx context.Context, app string, bundle io.Reader, opt
 	unlock := d.lock(app)
 	defer unlock()
 
-	a, err := d.store.EnsureApp(app)
+	// Validate before creating the app row so a rejected deploy leaves no trace.
+	a, err := d.store.GetApp(app)
+	if errors.Is(err, store.ErrNotFound) {
+		a, err = &store.App{Name: app}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -221,6 +225,12 @@ func (d *Deployer) Deploy(ctx context.Context, app string, bundle io.Reader, opt
 	}
 	if opts.Port < 0 || opts.Port > 65535 {
 		return nil, userErr(400, "invalid port %d", opts.Port)
+	}
+
+	if a.CreatedAt == "" {
+		if a, err = d.store.EnsureApp(app); err != nil {
+			return nil, err
+		}
 	}
 
 	rel := d.newReleaseID(app)
