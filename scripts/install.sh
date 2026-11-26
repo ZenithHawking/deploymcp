@@ -107,9 +107,21 @@ ExecStart=
 ExecStart=/usr/bin/caddy run --environ --resume
 ExecReload=
 EOF
+  # Start from an empty config: a previous Caddyfile-based autosave may bind
+  # ports we must not touch (e.g. :80 owned by nginx). The agent loads the
+  # real routes right after it starts. The old autosave is kept as a backup.
+  AUTOSAVE=/var/lib/caddy/.config/caddy/autosave.json
+  mkdir -p "$(dirname "$AUTOSAVE")"
+  if [ -f "$AUTOSAVE" ] && ! grep -q '"deploymcp"' "$AUTOSAVE"; then
+    cp "$AUTOSAVE" "$AUTOSAVE.bak.$(date +%s)"
+  fi
+  if [ ! -f "$AUTOSAVE" ] || ! grep -q '"deploymcp"' "$AUTOSAVE"; then
+    echo '{"admin":{"listen":"localhost:2019"}}' > "$AUTOSAVE"
+  fi
+  chown -R caddy:caddy /var/lib/caddy/.config 2>/dev/null || true
   systemctl daemon-reload
   systemctl enable caddy >/dev/null 2>&1
-  systemctl restart caddy
+  systemctl restart caddy || die "Caddy failed to start: journalctl -u caddy -n 30"
 fi
 
 # ---------- Agent binary ----------
