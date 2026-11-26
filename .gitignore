@@ -1,0 +1,6 @@
+dist/
+node_modules/
+*.exe
+.DS_Store
+data/
+deploymcp_architecture_implementation_blueprint.md
