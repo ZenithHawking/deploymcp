@@ -18,7 +18,7 @@
 set -eu
 
 REPO="${DEPLOYMCP_REPO:-ZenithHawking/deploymcp}"
-VERSION="latest"
+DMCP_VERSION="latest"
 DOMAIN=""
 EMAIL=""
 NO_CADDY=0
@@ -37,7 +37,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --domain) DOMAIN="${2:-}"; shift 2 ;;
     --email) EMAIL="${2:-}"; shift 2 ;;
-    --version) VERSION="${2:-}"; shift 2 ;;
+    --version) DMCP_VERSION="${2:-}"; shift 2 ;;
     --no-caddy) NO_CADDY=1; shift ;;
     --tunnel) TUNNEL=1; shift ;;
     --http-port) HTTP_PORT="${2:-}"; shift 2 ;;
@@ -129,12 +129,12 @@ if [ -n "${DEPLOYMCP_BINARY:-}" ]; then
   say "Installing agent from $DEPLOYMCP_BINARY"
   install -m 0755 "$DEPLOYMCP_BINARY" "$BIN"
 else
-  if [ "$VERSION" = "latest" ]; then
+  if [ "$DMCP_VERSION" = "latest" ]; then
     URL="https://github.com/$REPO/releases/latest/download/deploymcp-agent-linux-$ARCH"
   else
-    URL="https://github.com/$REPO/releases/download/$VERSION/deploymcp-agent-linux-$ARCH"
+    URL="https://github.com/$REPO/releases/download/$DMCP_VERSION/deploymcp-agent-linux-$ARCH"
   fi
-  say "Downloading agent ($ARCH, $VERSION)"
+  say "Downloading agent ($ARCH, $DMCP_VERSION)"
   TMP="$(mktemp)"
   curl -fsSL "$URL" -o "$TMP" || die "download failed: $URL"
   install -m 0755 "$TMP" "$BIN"
